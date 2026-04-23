@@ -291,21 +291,25 @@ function nearestNeighbor(pts, start) {
   return r;
 }
 
-// ── TSP 第二阶段：2-opt（闭合环路版）─────────────────────────────────────────
-// 闭合版把 route[n-1]→route[0] 也纳入交换范围，比开放版找到更优的全局解
+// ── TSP 第二阶段：2-opt（开放路径，只优化单程距离）──────────────────────────
 function twoOpt(pts, route) {
   const n = route.length;
   let improved = true;
   while (improved) {
     improved = false;
-    for (let i = 0; i < n - 1; i++) {
+    for (let i = 0; i < n - 2; i++) {
       for (let j = i + 2; j < n; j++) {
-        if (i === 0 && j === n - 1) continue; // 同一条边，跳过
-        const ni = (i + 1) % n, nj = (j + 1) % n;
-        const before = dist(pts[route[i]], pts[route[ni]]) + dist(pts[route[j]], pts[route[nj]]);
-        const after  = dist(pts[route[i]], pts[route[j]])  + dist(pts[route[ni]], pts[route[nj]]);
+        let before, after;
+        if (j < n - 1) {
+          before = dist(pts[route[i]], pts[route[i+1]]) + dist(pts[route[j]], pts[route[j+1]]);
+          after  = dist(pts[route[i]], pts[route[j]])   + dist(pts[route[i+1]], pts[route[j+1]]);
+        } else {
+          // j 是末尾：只改一条边（翻转尾部）
+          before = dist(pts[route[i]], pts[route[i+1]]);
+          after  = dist(pts[route[i]], pts[route[j]]);
+        }
         if (after < before - 1e-10) {
-          let l = i + 1, r = j;
+          let l = i+1, r = j;
           while (l < r) { const t = route[l]; route[l] = route[r]; route[r] = t; l++; r--; }
           improved = true;
         }
@@ -315,7 +319,7 @@ function twoOpt(pts, route) {
   return route;
 }
 
-// ── TSP 第三阶段：Or-opt 单点重插（闭合环路版）───────────────────────────────
+// ── TSP 第三阶段：Or-opt 单点重插（开放路径）─────────────────────────────────
 function orOpt(pts, route) {
   const n = route.length;
   let improved = true;
@@ -323,17 +327,19 @@ function orOpt(pts, route) {
     improved = false;
     outer:
     for (let i = 0; i < n; i++) {
-      const cur  = route[i];
-      const prev = route[(i - 1 + n) % n];
-      const next = route[(i + 1) % n];
-      const saving = dist(pts[prev], pts[cur]) + dist(pts[cur], pts[next]) - dist(pts[prev], pts[next]);
-      for (let j = 0; j < n; j++) {
-        if (j === (i - 1 + n) % n || j === i) continue;
-        const jn = (j + 1) % n;
-        const insertCost = dist(pts[route[j]], pts[cur]) + dist(pts[cur], pts[route[jn]]) - dist(pts[route[j]], pts[route[jn]]);
+      const cur   = route[i];
+      const dPrev = i > 0     ? dist(pts[route[i-1]], pts[cur]) : 0;
+      const dNext = i < n-1   ? dist(pts[cur], pts[route[i+1]]) : 0;
+      const dGap  = (i > 0 && i < n-1) ? dist(pts[route[i-1]], pts[route[i+1]]) : 0;
+      const saving = dPrev + dNext - dGap;
+      for (let j = 0; j < n-1; j++) {
+        if (j === i-1 || j === i) continue;
+        const insertCost = dist(pts[route[j]], pts[cur])
+                         + dist(pts[cur], pts[route[j+1]])
+                         - dist(pts[route[j]], pts[route[j+1]]);
         if (saving - insertCost > 1e-10) {
           route.splice(i, 1);
-          route.splice(j < i ? j + 1 : j, 0, cur);
+          route.splice(j < i ? j+1 : j, 0, cur);
           improved = true;
           break outer;
         }
@@ -343,52 +349,29 @@ function orOpt(pts, route) {
   return route;
 }
 
-// ── 闭合环路总距离 ────────────────────────────────────────────────────────────
-function closedDist(pts, route) {
-  let d = 0;
-  const n = route.length;
-  for (let i = 0; i < n; i++) d += dist(pts[route[i]], pts[route[(i + 1) % n]]);
-  return d;
-}
-
-// ── 切掉最长边，闭合环路 → 最优开放路径 ──────────────────────────────────────
-function cutLongestEdge(pts, route) {
-  const n = route.length;
-  let maxD = -1, cutAt = 0;
-  for (let i = 0; i < n; i++) {
-    const d = dist(pts[route[i]], pts[route[(i + 1) % n]]);
-    if (d > maxD) { maxD = d; cutAt = i; }
-  }
-  // 从 cutAt+1 开始重排，使路线从切口之后出发
-  const start = (cutAt + 1) % n;
-  return [...route.slice(start), ...route.slice(0, start)];
-}
-
-// ── 主优化：闭合环路优化 → 切最长边 → 全局最优开放路径 ───────────────────────
+// ── 主优化：全部 130 个起点各跑一次 NN，取最短的 5 条再跑 2-opt + Or-opt ──────
+// 穷举所有起点保证不漏掉任何可能的最优开放路径起点
 function optimize(pts) {
   const n = pts.length;
-  const cx = pts.reduce((s, p) => s + p.lat, 0) / n;
-  const cy = pts.reduce((s, p) => s + p.lng, 0) / n;
-  let minD = Infinity, centIdx = 0;
-  pts.forEach((p, i) => { const d = (p.lat-cx)**2+(p.lng-cy)**2; if (d < minD) { minD=d; centIdx=i; } });
-  let nIdx=0, sIdx=0, eIdx=0, wIdx=0;
-  pts.forEach((p, i) => {
-    if (p.lat > pts[nIdx].lat) nIdx = i;
-    if (p.lat < pts[sIdx].lat) sIdx = i;
-    if (p.lng > pts[eIdx].lng) eIdx = i;
-    if (p.lng < pts[wIdx].lng) wIdx = i;
-  });
 
-  // 多起点跑闭合环路优化，取最短闭合环
+  // 第一轮：所有点作起点跑 NN，快速筛出最短的 5 条候选
+  const nnResults = [];
+  for (let s = 0; s < n; s++) {
+    const r = nearestNeighbor(pts, s);
+    nnResults.push({ r, d: routeTotalDist(pts, r) });
+  }
+  nnResults.sort((a, b) => a.d - b.d);
+  const top5 = nnResults.slice(0, 5).map(x => x.r);
+
+  // 第二轮：对 5 条候选做精细优化，取最短
   let bestRoute = null, bestDist = Infinity;
-  [...new Set([centIdx, nIdx, sIdx, eIdx, wIdx])].forEach(s => {
-    const r = orOpt(pts, twoOpt(pts, nearestNeighbor(pts, s)));
-    const d = closedDist(pts, r);
-    if (d < bestDist) { bestDist = d; bestRoute = [...r]; }
+  top5.forEach(r => {
+    const refined = orOpt(pts, twoOpt(pts, r));
+    const d = routeTotalDist(pts, refined);
+    if (d < bestDist) { bestDist = d; bestRoute = refined; }
   });
 
-  // 切掉最长边 → 全程最短的开放路径，起终点由算法自动确定
-  return cutLongestEdge(pts, bestRoute);
+  return bestRoute;
 }
 
 // ── 文件上传 ──────────────────────────────────────────────────────────────────
