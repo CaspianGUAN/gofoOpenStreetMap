@@ -193,18 +193,89 @@
       color: white;
       line-height: 1;
     }
+
+    /* ── 手机端：侧边栏改为左滑浮层 ────────────────────────────────── */
+    #list-toggle-btn { display: none; }
+
+    @media (max-width: 768px) {
+      /* 标题缩短，stats 自动换行 */
+      #header h1 { font-size: 14px; }
+      #header { gap: 8px; padding: 0 12px; }
+      .stat { padding: 4px 9px; }
+      .stat-val { font-size: 13px; }
+      .stat-lbl { font-size: 9px; }
+
+      /* 列表浮动按钮 */
+      #list-toggle-btn {
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(255,255,255,0.2);
+        border: 1px solid rgba(255,255,255,0.38);
+        color: white;
+        width: 34px; height: 34px;
+        border-radius: 8px;
+        cursor: pointer;
+        flex-shrink: 0;
+        font-size: 18px;
+      }
+
+      /* 上传按钮在手机缩短文字 */
+      #upload-btn { padding: 5px 10px; font-size: 12px; }
+
+      /* 侧边栏变为绝对定位浮层 */
+      #sidebar {
+        position: absolute;
+        top: 0; bottom: 0; left: 0;
+        width: 85vw;
+        max-width: 320px;
+        min-width: unset;
+        transform: translateX(-100%);
+        transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 4px 0 20px rgba(0,0,0,0.18);
+        z-index: 2000;
+      }
+      #sidebar.open { transform: translateX(0); }
+
+      /* 遮罩 */
+      #backdrop {
+        display: none;
+        position: absolute; inset: 0;
+        background: rgba(0,0,0,0.32);
+        z-index: 1999;
+        backdrop-filter: blur(1px);
+      }
+      #backdrop.show { display: block; }
+
+      /* 侧边栏内关闭按钮 */
+      #close-sidebar { display: flex; }
+
+      /* 点击列表条目后关闭侧边栏 */
+      #map-wrap { position: relative; }
+    }
+
+    #close-sidebar {
+      display: none;
+      align-items: center; justify-content: center;
+      background: none; border: none;
+      color: #94a3b8;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 2px 4px;
+      line-height: 1;
+    }
+    #close-sidebar:hover { color: #475569; }
   </style>
 </head>
 <body>
 
 <div id="header">
+  <button id="list-toggle-btn" onclick="toggleSidebar()" aria-label="查看列表">☰</button>
   <h1>🚚 配送路线规划器</h1>
   <button id="upload-btn" onclick="document.getElementById('file-input').click()">上传 JSON</button>
   <input type="file" id="file-input" accept=".json" onchange="handleFile(event)">
   <div id="stats-bar">
     <div class="stat"><div class="stat-val" id="s-stops">—</div><div class="stat-lbl">配送点</div></div>
-    <div class="stat"><div class="stat-val" id="s-dist">—</div><div class="stat-lbl">实际距离</div></div>
-    <div class="stat" id="stat-time-wrap"><div class="stat-val" id="s-time">—</div><div class="stat-lbl" id="s-time-lbl">驾车时间</div></div>
+    <div class="stat"><div class="stat-val" id="s-dist">—</div><div class="stat-lbl">距离</div></div>
+    <div class="stat" id="stat-time-wrap"><div class="stat-val" id="s-time">—</div><div class="stat-lbl" id="s-time-lbl">时间</div></div>
   </div>
 </div>
 
@@ -212,7 +283,10 @@
   <div id="sidebar">
     <div id="sidebar-head">
       <span id="sidebar-title">等待上传...</span>
-      <button id="export-btn" onclick="exportTxt()">导出列表</button>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button id="export-btn" onclick="exportTxt()">导出列表</button>
+        <button id="close-sidebar" onclick="toggleSidebar()" aria-label="关闭">✕</button>
+      </div>
     </div>
     <div id="list">
       <div id="list-placeholder">上传配送 JSON 文件<br>自动规划最优驾车路线</div>
@@ -220,6 +294,7 @@
   </div>
 
   <div id="map-wrap">
+    <div id="backdrop" onclick="toggleSidebar()"></div>
     <div id="map"></div>
     <div id="ov-empty">
       <div class="ov-icon">🗺️</div>
@@ -500,6 +575,7 @@ function renderMarkers() {
       gMap.setView([pt.lat, pt.lng], 17);
       gMarkers[idx].openPopup();
       highlightRow(idx);
+      closeSidebarOnMobile();
     };
     listEl.appendChild(row);
   });
@@ -613,6 +689,19 @@ function esc(str) {
   return String(str ?? '')
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── 侧边栏开关（手机端）─────────────────────────────────────────────────────
+function toggleSidebar() {
+  const sidebar  = document.getElementById('sidebar');
+  const backdrop = document.getElementById('backdrop');
+  const isOpen   = sidebar.classList.contains('open');
+  sidebar.classList.toggle('open', !isOpen);
+  backdrop.classList.toggle('show', !isOpen);
+}
+
+function closeSidebarOnMobile() {
+  if (window.innerWidth <= 768) toggleSidebar();
 }
 
 // 页面加载完成后初始化地图
