@@ -423,10 +423,13 @@ function renderMarkers() {
   const n = gRoute.length;
   const pts = gRoute.map(i => gPoints[i]);
 
+  // 立即显示 Haversine 估算值（城市道路系数 ×1.3）
+  const estKm  = routeTotalDist(gPoints, gRoute) * 1.3;
+  const estMin = Math.round((estKm / 28) * 60) + n * 2;
   document.getElementById('s-stops').textContent = n;
-  document.getElementById('s-dist').textContent  = '查询中...';
-  document.getElementById('s-time').textContent  = '查询中...';
-  document.getElementById('s-time-lbl').textContent = '驾车时间';
+  document.getElementById('s-dist').textContent  = estKm.toFixed(1) + ' km';
+  document.getElementById('s-time').textContent  = Math.floor(estMin/60) + 'h ' + (estMin%60) + 'm';
+  document.getElementById('s-time-lbl').textContent = '预计时间';
   document.getElementById('stat-time-wrap').classList.remove('real');
   document.getElementById('stats-bar').style.display = 'flex';
   document.getElementById('sidebar-title').textContent = `共 ${n} 个配送点`;
@@ -498,6 +501,9 @@ function renderMarkers() {
     listEl.appendChild(row);
   });
 
+  // 先画虚线连接线，OSRM 返回后替换为真实道路
+  drawFallbackPolyline(pts);
+
   gMap.fitBounds(bounds, { padding: [40, 40] });
   document.getElementById('ov-empty').style.display = 'none';
 }
@@ -508,10 +514,10 @@ function highlightRow(idx) {
   if (row) { row.classList.add('active'); row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 }
 
-// ── OSRM：真实道路路线 + 实际行驶距离和时间 ──────────────────────────────────
-// 分 3 段并发请求（每段约 45 个点），避免公共服务器超时
+// ── OSRM：后台获取真实道路路线 + 精确时间（不阻塞 UI）────────────────────────
+// 分 5 段并发，每段 ~26 个点，用 overview=simplified 减小响应体积
 async function fetchOsrmRoute(pts) {
-  const STEP = 45;
+  const STEP = 26;
   const chunks = [];
   for (let i = 0; i < pts.length - 1; i += STEP) {
     chunks.push(pts.slice(i, Math.min(i + STEP + 1, pts.length)));
@@ -519,15 +525,15 @@ async function fetchOsrmRoute(pts) {
 
   const results = await Promise.all(chunks.map(async chunk => {
     const coords = chunk.map(p => `${p.lng},${p.lat}`).join(';');
-    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=simplified&geometries=geojson`;
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) throw new Error(res.status);
       const data = await res.json();
       if (data.code !== 'Ok') throw new Error(data.code);
       return {
-        distM:    data.routes[0].distance,           // 米
-        durSecs:  data.routes[0].duration,           // 秒
+        distM:    data.routes[0].distance,
+        durSecs:  data.routes[0].duration,
         geometry: data.routes[0].geometry.coordinates, // [lng, lat][]
       };
     } catch (err) {
@@ -536,37 +542,28 @@ async function fetchOsrmRoute(pts) {
     }
   }));
 
-  if (results.some(r => r === null)) {
-    // 部分失败：回退到直线估算
-    const totalKm = routeTotalDist(gPoints, gRoute);
-    const totalMin = Math.round((totalKm / 28) * 60) + gRoute.length * 2;
-    document.getElementById('s-dist').textContent = totalKm.toFixed(1) + ' km';
-    document.getElementById('s-time').textContent = Math.floor(totalMin/60) + 'h ' + (totalMin%60) + 'm';
-    document.getElementById('s-time-lbl').textContent = '预计时间';
-    drawFallbackPolyline(gRoute.map(i => gPoints[i]));
-    return;
-  }
+  // 只要有一段失败，保留估算值和虚线，不更新
+  if (results.some(r => r === null)) return;
 
-  // 合并所有分段的道路坐标（去掉各段接头的重复点）
+  // 合并道路坐标，替换虚线为真实道路
   const allCoords = [];
   results.forEach((r, i) => {
-    const coords = i === 0 ? r.geometry : r.geometry.slice(1);
-    coords.forEach(([lng, lat]) => allCoords.push([lat, lng])); // 转成 Leaflet [lat, lng]
+    const seg = i === 0 ? r.geometry : r.geometry.slice(1);
+    seg.forEach(([lng, lat]) => allCoords.push([lat, lng]));
   });
 
-  // 画真实道路折线
   if (gRouteLayer) gMap.removeLayer(gRouteLayer);
   gRouteLayer = L.polyline(allCoords, {
     color: '#2563eb',
     weight: 4,
     opacity: 0.78,
   }).addTo(gMap);
-  gRouteLayer.bringToBack(); // 折线放在标记下面
+  gRouteLayer.bringToBack();
 
-  // 更新统计数据
+  // 用真实数据更新统计栏
   const totalDistKm = results.reduce((s, r) => s + r.distM, 0) / 1000;
   const driveMin    = Math.round(results.reduce((s, r) => s + r.durSecs, 0) / 60);
-  const totalMin    = driveMin + gRoute.length * 2; // 驾车 + 每站约 2 分钟
+  const totalMin    = driveMin + gRoute.length * 2;
 
   document.getElementById('s-dist').textContent = totalDistKm.toFixed(1) + ' km';
   document.getElementById('s-time').textContent = Math.floor(totalMin/60) + 'h ' + (totalMin%60) + 'm';
